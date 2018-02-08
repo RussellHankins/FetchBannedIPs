@@ -22,10 +22,11 @@ This program is written in C++ (well, maybe mostly C). It uses the Mysql C API t
 I wrote it in C++11 instead of a bash script because:
 * I wanted the database password to be difficult to recover.
 * I wanted the program to run fast.
-* I had just written a set of wrapper classes for the MySQL C API and wanted to test it out.
+* I had just written a set of wrapper classes for the MySQL C API for [another project](http://russellhankins.com/ban_hackers.chp) and wanted to test it out.
 * Feel free download/modify
 
-Install MySQL C API: apt-get install libmysqlclient-dev
-[MySQL C API Tutorial](http://zetcode.com/db/mysqlc/)
-[MySQL C API Function Overview](https://dev.mysql.com/doc/refman/5.5/en/c-api-function-overview.html)
-[MySQL C API Prepared Statements Sample](https://dev.mysql.com/doc/refman/5.5/en/c-api-prepared-call-statements.html)
+# Links to help you compile:
+* Install MySQL C API: apt-get install libmysqlclient-dev
+* [MySQL C API Tutorial](http://zetcode.com/db/mysqlc/)
+* [MySQL C API Function Overview](https://dev.mysql.com/doc/refman/5.5/en/c-api-function-overview.html)
+* [MySQL C API Prepared Statements Sample](https://dev.mysql.com/doc/refman/5.5/en/c-api-prepared-call-statements.html)
