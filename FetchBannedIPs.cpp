@@ -12,20 +12,24 @@ struct node
 	struct node *next;
 };
 
-void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_ban);
-bool AddIPToList(struct node **list,char *line);
+void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_ban,int stop_count);
+bool AddIPToList(struct node **list,char *line,bool parse);
 bool BanThisIP(const char *bannedIP,int length,struct node **current_ips);
 void FreeNodes(struct node **current_ips);
 void OpenDatabase(mysqli &db,const char *server);
 void rot13(const char *original,char *output);
 bool IsIP(const char *ip);
+void ListCurrent();
+void ClearCurrent();
+struct node *ReadFromIptables();
+struct node *GetIPsToBan(const char *server);
 
 // Opens a database connection.
 void OpenDatabase(mysqli &db,const char *server)
 {	
-	char username[30];
-	char password[30];
-	char database[30];
+	char username[50];
+	char password[50];
+	char database[50];
 	
 	rot13("Put encrypted user name here",username);
 	rot13("Put encrypted password here",password);
@@ -36,68 +40,181 @@ void OpenDatabase(mysqli &db,const char *server)
 
 int main(int argc,char *argv[])
 {
-	struct node *current_ips = nullptr;	
+	struct node *current_ips;	
 	char line[1000];
-   if (argc==2) {
-	   if (isatty(fileno(stdin))) {
-			printf("Here's a list of IPs that need to be banned:\n");			
-			FetchBannedIPs(argv[1],nullptr,false);
-		} else {			
-			// Read the list of currently banned IPs from the 
-		   while (!feof(stdin)) {			   
-			   fgets(line,999,stdin);
-			   line[999] = 0;
-			   if (!AddIPToList(&current_ips,line)) {
-				   printf("Out of memory reading the input list\n.");
-				   return 0;
-			   }
-		   }
-		   FetchBannedIPs(argv[1],&current_ips,true);
-		   FreeNodes(&current_ips);
-		}	    
-   } else {
-	   printf("FetchBannedIPs V 1.2\nReads banned IPs from a database and bans them on this server.\n");
-	   printf("FetchBannedIPs {server}\n");
-	   printf("Connects to {server}, fetches new banned IPs and adds them to iptables if needed.\n");	   
-	   printf("Example 1 - List banned IPs from the database:\nFetchBannedIPs 192.168.0.204\n");	   
-	   printf("Example 2 - Read the banned IPs from the database and ban them here:\nsudo iptables -S|FetchBannedIPs 192.168.0.204\n");
-   }
-   return 0;
+	current_ips = nullptr;
+	try
+	{
+		switch (argc)
+		{
+			case 2:
+			{
+				if (strcmp(argv[1],"LIST")==0) {
+					ListCurrent();
+				} else {
+					if (strcmp(argv[1],"CLEAR")==0) {
+					ClearCurrent();
+					printf("Cleared.\n");
+					} else {
+					printf("Here's a list of IPs that need to be banned:\n");
+					FetchBannedIPs(argv[1],nullptr,false,0);
+					}
+				}
+				break;
+			}
+			case 3:
+			{
+				if (strcmp(argv[2],"BAN")==0) {
+					current_ips = ReadFromIptables();
+					FetchBannedIPs(argv[1],&current_ips,true,0);
+					FreeNodes(&current_ips);
+				} else {
+					if (strcmp(argv[2],"BAN200")==0) {
+						current_ips = ReadFromIptables();
+						FetchBannedIPs(argv[1],&current_ips,true,200);
+						FreeNodes(&current_ips);
+					} else {
+						printf("Argument 3 %s was not understood.\n",argv[2]);
+					}
+				}
+				break;
+			}
+			default:
+			{
+			   printf("FetchBannedIPs V 1.3\nReads banned IPs from a database and bans them on this server.\n");
+			   printf("FetchBannedIPs {server}\n");
+			   printf("Connects to {server}, fetches new banned IPs and adds them to iptables if needed.\n");
+			   printf("FetchBannedIPs LIST\nReads the banned IPs from iptables and displays them.");
+			   printf("FetchBannedIPs CLEAR\nRemoves all the ban rules from iptables.");
+			   printf("FetchBannedIPs {server} BAN\nReads banned IPs from a database and bans them.\n");
+			   printf("Example 1 - List banned IPs from the database:\nFetchBannedIPs 192.168.0.204\n");	   
+			   printf("Example 2 - Read the banned IPs from the database and ban them here:\n");
+			   printf("FetchBannedIPs 192.168.0.204 BAN\n");
+			   printf("Example 3 - Read the banned IPs from the database and ban them here (Stop at 200):\n");
+			   printf("FetchBannedIPs 192.168.0.204 BAN200\n");
+			   break;
+			}
+		}
+	} catch(const char *error) {
+		 printf("%s\n",error);
+	}
+	return 0;
+}
+
+// Clear the current list of IPs.
+void ClearCurrent()
+{
+	struct node *ipList;
+	struct node *loop;
+	const int BUFFER_SIZE=1024;
+	char buffer[BUFFER_SIZE];
+	ipList = ReadFromIptables();
+	loop = ipList;
+	while (loop != nullptr) {
+		snprintf(buffer,BUFFER_SIZE,"sudo iptables -D INPUT -s %s/32 -j DROP",loop->item);
+		printf("%s\n",buffer);
+		system(buffer);
+		loop = loop->next;
+	}
+	FreeNodes(&ipList);
+	return;
+}
+
+// List the current banned IPs from iptables.
+void ListCurrent()
+{
+	struct node *ipList;
+	struct node *loop;
+	ipList = ReadFromIptables();
+	loop = ipList;
+	while (loop != nullptr) {
+		printf("%s\n",loop->item);
+		loop = loop->next;
+	}
+	FreeNodes(&ipList);
+	return;
+}
+
+// Reads all the IPs from the iptables program.
+struct node *ReadFromIptables()
+{
+	FILE *fInput;
+	struct node *ipList;
+	const int BUFFER_SIZE = 1024;
+	char buffer[BUFFER_SIZE];
+	bool outOfMemory;
+
+	ipList = nullptr;
+	outOfMemory = false;
+	fInput = popen("sudo iptables -S","r");
+	if (fInput != nullptr) {
+		while (fgets(buffer,BUFFER_SIZE,fInput) != nullptr) {
+			if (!outOfMemory) {
+				if (!AddIPToList(&ipList,buffer,true)) {
+					outOfMemory = true;
+				}
+			}
+		}
+		pclose(fInput);
+	}
+	if (outOfMemory) {
+		FreeNodes(&ipList);
+		throw "Out of memory reading IPs from iptables.";
+	}
+	return ipList;
 }
 
 // Adds one IP from iptables to the list.
-bool AddIPToList(struct node **list,char *line)
+bool AddIPToList(struct node **list,char *line,bool parse)
 {
 	char *search1;
 	char *search2;
 	int length;
 	char *ip;
-	struct node *new_node;
-	if (strncmp(line,"-A INPUT -s ",12)==0) {
-		search1 = strstr(line,"-j DROP");
-		if (search1 != nullptr) {
-			search2 = strstr(line,"/");
-			if (search2 == nullptr) {
-				length = (search1-line)-12;
-			} else {
-				length = (search2-line)-12;
+	struct node *new_node;	
+	if (parse) {
+		if (strncmp(line,"-A INPUT -s ",12)==0) {
+			search1 = strstr(line,"-j DROP");
+			if (search1 != nullptr) {
+				search2 = strstr(line,"/");
+				if (search2 == nullptr) {
+					length = (search1-line)-12;
+				} else {
+					length = (search2-line)-12;
+				}
+				ip = new char[length+1];
+				if (ip == nullptr) {
+					return false;
+				}
+				memcpy(ip,line+12,length);
+				ip[length]=0;
+				new_node = new node;// (struct node *)malloc(sizeof(struct node));
+				if (new_node == nullptr) {
+					delete[] ip;
+					return false;
+				}
+				new_node->item = ip;
+				new_node->length = length;
+				new_node->next = *list;
+				*list = new_node;
 			}
-			ip = new char[length+1];
-			if (ip == nullptr) {
-				return false;
-			}
-			memcpy(ip,line+12,length);
-			ip[length]=0;
-			new_node = new node;// (struct node *)malloc(sizeof(struct node));
-			if (new_node == nullptr) {
-				delete[] ip;
-				return false;
-			}
-			new_node->item = ip;
-			new_node->length = length;
-			new_node->next = *list;
-			*list = new_node;
 		}
+	} else {
+		length = strlen(line);
+		ip = new char[length+1];
+		if (ip == nullptr) {
+			return false;
+		}
+		strcpy(ip,line);		
+		new_node = new node;// (struct node *)malloc(sizeof(struct node));
+		if (new_node == nullptr) {
+			delete[] ip;
+			return false;
+		}
+		new_node->item = ip;
+		new_node->length = length;
+		new_node->next = *list;
+		*list = new_node;
 	}
 	return true;
 }
@@ -145,23 +262,26 @@ void PrepareGetNewBannedQuery(mysqli &db,mysqli_stmt &stmt)
    return;
 }
 
-void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_ban)
+struct node *GetIPsToBan(const char *server)
 {
-	try
-	{
-       mysqli db;
-       OpenDatabase(db,server);
-       mysqli_stmt stmt;
-       int inputBannedID;
-       int outputBannedID;
-       char outputBannedIP[200];
-       unsigned long outputBannedIPLength;
-       
-       PrepareGetNewBannedQuery(db,stmt);
-       int param_count = stmt.param_count();
+	struct node *list;
+    mysqli db;
+	bool outOfMemory;
+	mysqli_stmt stmt;
+	int inputBannedID;
+	int outputBannedID;
+	char outputBannedIP[51];
+	unsigned long outputBannedIPLength;
+	int numberofsaves;
+
+	outOfMemory= false;
+	list = nullptr;
+    OpenDatabase(db,server);
+	outputBannedIP[50] = 0;
+	PrepareGetNewBannedQuery(db,stmt);
+	int param_count = stmt.param_count();
        if (param_count != 1) {
-		   printf("Incorrect number of parameters.\n");
-		   return;
+		   throw "Incorrect number of parameters.";
 	   }
        mysqli_bind inputs(1);
        inputBannedID = 0; // In the future, this will be a different number.
@@ -171,29 +291,59 @@ void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_b
        // Build outputs for the loop.
        mysqli_bind outputs(2);
        outputs.bind(0,outputBannedID);
-       outputs.bind(1,outputBannedIP,199,outputBannedIPLength);
+       outputs.bind(1,outputBannedIP,50,outputBannedIPLength);
        if (!stmt.bind_result(outputs)) {
-		   printf("bind results failed.");
-		   return;
+		   throw "bind results failed.";
 	   }
 	   if (!stmt.store_result()) {
-		   printf("Error in store_result.\n");
-		   return;
-	   }
+		   throw "Error in store_result.";
+	   }	   
+	   numberofsaves = 0;
        while (stmt.fetch()) {
-		   if (actually_ban) {
-			   if (IsIP(outputBannedIP)) {
-				   if (BanThisIP(outputBannedIP,(int)outputBannedIPLength,current_ips)) {
-					   printf("Added %s\n",outputBannedIP);
-					}
-				}
-		   } else {
-			   printf("%d %s\n",outputBannedID,outputBannedIP);
-		   }
-	   }
-       // Close objects.
-       stmt.close();
+		if (!AddIPToList(&list,outputBannedIP,false)) {
+			outOfMemory = true;
+			break;
+		}
+	}
+	stmt.close();
        db.close();
+	if (outOfMemory) {
+		FreeNodes(&list);
+		throw "Out of memory reading the list of IPs from the database.";
+	}
+	return list;
+}
+
+void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_ban,int stop_count)
+{
+	struct node *ipsToBan;
+	struct node *loop;
+	int numberofsaves;
+	try
+	{
+		numberofsaves = 0;
+		ipsToBan = nullptr;
+		ipsToBan = GetIPsToBan(server);
+		loop = ipsToBan;
+		while (loop != nullptr) {
+			if (actually_ban && IsIP(loop->item)) {
+				if (BanThisIP(loop->item,loop->length,current_ips))
+				{
+					numberofsaves++;
+					printf("Added %s\n",loop->item);
+					if ((stop_count > 0) && (numberofsaves > stop_count)) {
+					   // Run for a little over 3 minutes, then exit.
+					   printf("Stopped at %d.\n",stop_count);
+					   break;
+					}
+					sleep(1); // Sleep 1 second				   
+				}
+			} else {
+				printf("%s\n",loop->item);
+			}
+			loop = loop->next;
+		}
+		FreeNodes(&ipsToBan);
      } catch(const char *error) {
 		 printf(error);
 	 }	 
