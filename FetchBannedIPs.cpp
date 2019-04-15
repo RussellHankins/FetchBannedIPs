@@ -4,14 +4,18 @@
 #include "mysqli.h"
 #include "mysqli_bind.h"
 #include <string.h>
+
+#ifdef __linux__
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <signal.h>
-
+#endif
 
 // Turn this on to debug segmentation faults:
 #define DEBUG LineNumber = __LINE__
-volatile int LineNumber; // For debugging.	
+volatile int LineNumber; // For debugging.
+
+const char *ipset_name = "evil_hackers";
 
 struct node
 {
@@ -21,14 +25,22 @@ struct node
 	struct node *bigger;
 };
 
+// Run this if the user sent in one parameter.
+void ProcessOneParameter(const char *argv1,bool useIpset);
+// Run this if the user sent in two parameters.
+void ProcessTwoParameters(const char *argv1,const char *argv2,bool useIpset);
+// Runs if the user sent three parameters.
+void ProcessThreeParameters(const char *argv1,const char *argv2,const char *argv3);
+// Show a message telling the user how to use this program.
+void ShowHelpMessage();
 // Fetch banned IPs from the database and ban them.
-void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_ban,int stop_count);
+void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_ban,int stop_count,bool useIpset);
 // Adds one IP from iptables or database to the list.
 bool AddIPToList(struct node **list,char *line,bool parse,bool sort,struct node **duplicates);
 // Adds a node to a list. Finds the right spot for it. sorted = true for a binary tree else linked list.
 void AddNode(struct node *item,struct node **list,bool sorted,struct node **duplicates);
 // Ban bannedIP if it's not in current_ips. Then add it to current_ips.
-bool BanThisIP(struct node **bannedIP,struct node **current_ips);
+bool BanThisIP(struct node **bannedIP,struct node **current_ips,bool useIpset);
 // Frees all the memory of the node list.
 void FreeNodes(struct node **current_ips);
 // Opens a database connection.
@@ -38,17 +50,21 @@ void rot13(const char *original,char *output);
 // Is this an IP address? You can't trust the database because it might have been hacked.
 bool IsIP(const char *ip);
 // List the current banned IPs from iptables.
-void ListCurrent();
+void ListCurrent(bool useIpset);
 // Clear the current list of IPs.
-void ClearCurrent();
+void ClearCurrent(bool useIpset);
 // Clears a list of IPs.
-void ClearIPList(struct node *ipList);
+void ClearIPList(struct node *ipList,bool useIpset);
 // Find a node or the next place it goes. Returns found status in found.
 struct node *FindNode(struct node *list,const char *item,int length,int &found);
 // Reads all the IPs from the iptables program. If sort = true then return a tree otherwise return a linked list.
-struct node *ReadFromIptables(bool sort,struct node **duplicates);
+struct node *ReadFromIptables(bool sort,struct node **duplicates,bool useIpset,bool readAll);
 // Get the list of IPs to ban from the database. Returns a linked list, not a tree.
 struct node *GetIPsToBan(const char *server);
+// Create the ipset name. The program must already know it doesn't exist before calling.
+void CreateIpsetSetname();
+// Make sure iptables has the right ban rule for ipset.
+void MakeSureIptablesHasIpsetRule();
 
 #ifdef __linux__
 // Linux uses signals to 
@@ -67,9 +83,12 @@ void OpenDatabase(mysqli &db,const char *server)
 	char password[50];
 	char database[50];
 	
-	rot13("YzmSzxpvih",username); // "BanHackers"
-	rot13("$Yzmmvw5Vevi",password); // "$Banned4Ever"
-	rot13("yzmmvw",database); // "banned"
+	// Put the database username/password/database name here:
+	// Encrypt it with rot13 so someone doesn't find it with a binary editor.
+	// The formula I use is 27 - X for letters and 9 - X for numbers.
+	rot13("YztSzxpvih",username);
+	rot13("HgkrwSzxpvi$",password);
+	rot13("yzmmvw",database);
 	DEBUG;
 	db.real_connect(server,username,password,database,3306);
 	DEBUG;
@@ -78,11 +97,6 @@ void OpenDatabase(mysqli &db,const char *server)
 
 int main(int argc,char *argv[])
 {
-	struct node *current_ips;
-	struct node *duplicates;
-	char line[1000];
-	
-	current_ips = nullptr;
 	LineNumber = __LINE__;
 	
 	#ifdef __linux__
@@ -95,56 +109,23 @@ int main(int argc,char *argv[])
 		{
 			case 2:
 			{
-				if (strcmp(argv[1],"LIST")==0) {
-					ListCurrent();
-				} else {
-					if (strcmp(argv[1],"CLEAR")==0) {
-					ClearCurrent();
-					printf("Cleared.\n");
-					} else {
-					printf("Here's a list of IPs that need to be banned:\n");
-					FetchBannedIPs(argv[1],nullptr,false,0);
-					}
-				}
+				ProcessOneParameter(argv[1],false);
 				break;
 			}
 			case 3:
 			{
-				duplicates = nullptr;
-				if (strcmp(argv[2],"BAN")==0) {					
-					current_ips = ReadFromIptables(true,&duplicates);
-					FetchBannedIPs(argv[1],&current_ips,true,0);
-					FreeNodes(&current_ips);
-				} else {
-					if (strcmp(argv[2],"BAN200")==0) {
-						current_ips = ReadFromIptables(true,&duplicates);
-						FetchBannedIPs(argv[1],&current_ips,true,200);
-						FreeNodes(&current_ips);
-					} else {
-						printf("Argument 3 %s was not understood.\n",argv[2]);
-					}
-				}
-				if (duplicates != nullptr) {
-					ClearIPList(duplicates);
-					FreeNodes(&duplicates);
-					duplicates = nullptr;
-				}
+				ProcessTwoParameters(argv[1],argv[2],false);
+				break;
+			}
+			case 4:
+			{
+				ProcessThreeParameters(argv[1],argv[2],argv[3]);
 				break;
 			}
 			default:
 			{
-			   printf("FetchBannedIPs V 1.4\nReads banned IPs from a database and bans them on this server.\n");
-			   printf("FetchBannedIPs {server}\n");
-			   printf("Connects to {server}, fetches new banned IPs and adds them to iptables if needed.\n");
-			   printf("FetchBannedIPs LIST\nReads the banned IPs from iptables and displays them.");
-			   printf("FetchBannedIPs CLEAR\nRemoves all the ban rules from iptables.");
-			   printf("FetchBannedIPs {server} BAN\nReads banned IPs from a database and bans them.\n");
-			   printf("Example 1 - List banned IPs from the database:\nFetchBannedIPs 192.168.0.204\n");	   
-			   printf("Example 2 - Read the banned IPs from the database and ban them here:\n");
-			   printf("FetchBannedIPs 192.168.0.204 BAN\n");
-			   printf("Example 3 - Read the banned IPs from the database and ban them here (Stop at 200):\n");
-			   printf("FetchBannedIPs 192.168.0.204 BAN200\n");
-			   break;
+				ShowHelpMessage();
+				break;
 			}
 		}
 	} catch(const char *error) {
@@ -160,41 +141,136 @@ int main(int argc,char *argv[])
 	return 0;
 }
 
+// Run this if the user sent in one parameter.
+void ProcessOneParameter(const char *argv1,bool useIpset)
+{
+	if (strcasecmp(argv1,"LIST")==0) {
+		ListCurrent(useIpset);
+		return;
+	}
+	if (strcasecmp(argv1,"CLEAR")==0) {
+		ClearCurrent(useIpset);
+		printf("Cleared.\n");
+		return;
+	}
+	printf("Here's a list of IPs that need to be banned:\n");
+	FetchBannedIPs(argv1,nullptr,false,0,useIpset);
+	return;
+}
+
+// Run this if the user sent in two parameters.
+void ProcessTwoParameters(const char *argv1,const char *argv2,bool useIpset)
+{
+	struct node *duplicates = nullptr;
+	struct node *current_ips;
+	
+	do { // Loop only once
+		if (strcasecmp(argv2,"IPSET")==0) {
+			ProcessOneParameter(argv1,true);
+			break;
+		}
+		if (strcasecmp(argv2,"BAN")==0) {
+			current_ips = ReadFromIptables(true,&duplicates,useIpset,false);
+			FetchBannedIPs(argv1,&current_ips,true,0,useIpset);
+			FreeNodes(&current_ips);
+			break;
+		}
+		if (strcasecmp(argv2,"BAN200")==0) {
+			current_ips = ReadFromIptables(true,&duplicates,useIpset,false);
+			FetchBannedIPs(argv1,&current_ips,true,200,useIpset);
+			FreeNodes(&current_ips);
+			break;
+		}
+		printf("Argument 2 %s was not understood.\n",argv2);
+	} while (false);
+	if (duplicates != nullptr) {
+		// Remove duplicates.
+		ClearIPList(duplicates,useIpset);
+		FreeNodes(&duplicates);
+		duplicates = nullptr;
+	}
+	return;
+}
+
+// Runs if the user sent three parameters.
+void ProcessThreeParameters(const char *argv1,const char *argv2,const char *argv3)
+{
+	if (strcasecmp(argv3,"IPSET")==0) {
+		ProcessTwoParameters(argv1,argv2,true);
+	} else {
+		printf("Argument 3 %s was not understood.\n",argv3);
+	}
+	return;
+}
+
+// Show a message telling the user how to use this program.
+void ShowHelpMessage()
+{
+	printf("FetchBannedIPs V 1.5\n");
+	printf("Reads banned IPs from a database and bans them on this server.\n");
+	printf("FetchBannedIPs uses iptables, but if you add the IPSET parameter,it will use ipset.\n");
+	printf("Example 1 - List banned IPs from the database:\n");
+	printf("FetchBannedIPs 192.168.0.204\n");	   
+	printf("Example 2 - Read the banned IPs from the database and ban them here:\n");
+	printf("FetchBannedIPs 192.168.0.204 BAN\n");
+	printf("Example 3 - Read the banned IPs from the database and ban them here (Stop at 200):\n");
+	printf("FetchBannedIPs 192.168.0.204 BAN200\n");
+	printf("Example 4 - List all the IPs banned in iptables:\n");
+	printf("FetchBannedIPs LIST\n");
+	printf("Example 5 - Clear all banned IPs from iptables:\n");
+	printf("FetchBannedIPs CLEAR\n");	
+	printf("Example 6 - Read the banned IPs from the database and ban them with ipset:\n");
+	printf("FetchBannedIPs 192.168.0.204 BAN IPSET\n");
+	return;
+}
+
 // Clear the current list of IPs.
-void ClearCurrent()
+void ClearCurrent(bool useIpset)
 {
 	struct node *ipList;	
 	struct node *duplicates;	
-	duplicates = nullptr;
-	ipList = ReadFromIptables(false,&duplicates);
-	ClearIPList(ipList);
-	ClearIPList(duplicates);
-	FreeNodes(&ipList);
-	FreeNodes(&duplicates);
+	
+	if (useIpset) {
+		ClearIPList(nullptr,useIpset);
+	} else {
+		duplicates = nullptr;
+		ipList = ReadFromIptables(false,&duplicates,useIpset,false);
+		ClearIPList(ipList,useIpset);
+		ClearIPList(duplicates,useIpset);
+		FreeNodes(&ipList);
+		FreeNodes(&duplicates);
+	}
 	return;
 }
 // Clears a list of IPs.
-void ClearIPList(struct node *ipList)
+void ClearIPList(struct node *ipList,bool useIpset)
 {
 	const int BUFFER_SIZE = 1024;
 	char buffer[BUFFER_SIZE];
 	struct node *loop;
-	loop = ipList;
-	while (loop != nullptr) {
-		snprintf(buffer,BUFFER_SIZE,"sudo iptables -w -D INPUT -s %s/32 -j DROP",loop->item);
+	
+	if (useIpset) {
+		snprintf(buffer,BUFFER_SIZE,"sudo ipset flush %s",ipset_name);
 		printf("%s\n",buffer);
 		system(buffer);
-		loop = loop->bigger;
+	} else {		
+		loop = ipList;
+		while (loop != nullptr) {
+			snprintf(buffer,BUFFER_SIZE,"sudo iptables -D INPUT -s %s/32 -j DROP",loop->item);
+			printf("%s\n",buffer);
+			system(buffer);
+			loop = loop->bigger;
+		}
 	}
 	return;
 }
 
 // List the current banned IPs from iptables.
-void ListCurrent()
+void ListCurrent(bool useIpset)
 {
 	struct node *ipList;
 	struct node *loop;
-	ipList = ReadFromIptables(false,nullptr);	
+	ipList = ReadFromIptables(false,nullptr,useIpset,false);
 	loop = ipList;
 	while (loop != nullptr) {
 		printf("%s\n",loop->item);
@@ -205,7 +281,7 @@ void ListCurrent()
 }
 
 // Reads all the IPs from the iptables program.
-struct node *ReadFromIptables(bool sort,struct node **duplicates)
+struct node *ReadFromIptables(bool sort,struct node **duplicates,bool useIpset,bool readAll)
 {
 	// If sort is true then the list is a binary tree. 
 	// If sort if false then the list is a linked list.
@@ -215,19 +291,40 @@ struct node *ReadFromIptables(bool sort,struct node **duplicates)
 	const int BUFFER_SIZE = 1024;
 	char buffer[BUFFER_SIZE];
 	bool outOfMemory;
+	bool foundMembers;
 
 	ipList = nullptr;
 	outOfMemory = false;
 	DEBUG;
-	fInput = popen("sudo iptables -w -S","r");
+	if (useIpset) {
+		snprintf(buffer,BUFFER_SIZE,"sudo ipset list %s",ipset_name);
+		fInput = popen(buffer,"r");
+		foundMembers = false;
+	} else {
+		fInput = popen("sudo iptables -w -S","r");
+	}
 	if (fInput != nullptr) {
 		DEBUG;
 		while (fgets(buffer,BUFFER_SIZE,fInput) != nullptr) {
 			DEBUG;
 			if (!outOfMemory) {
 				DEBUG;
-				if (!AddIPToList(&ipList,buffer,true,sort,duplicates)) {
-					outOfMemory = true;
+				if (useIpset) {
+					// Use ipset
+					if ((readAll) || (foundMembers)) {
+						if (!AddIPToList(&ipList,buffer,false,sort,duplicates)) {
+							outOfMemory = true;
+						}
+					} else {
+						if (strncasecmp(buffer,"Members:",8)==0) {
+							foundMembers = true;
+						}						
+					}
+				} else {
+					// Use iptables.					
+					if (!AddIPToList(&ipList,buffer,!readAll,sort,duplicates)) {
+						outOfMemory = true;
+					}
 				}
 				DEBUG;
 			}
@@ -238,6 +335,11 @@ struct node *ReadFromIptables(bool sort,struct node **duplicates)
 	if (outOfMemory) {
 		FreeNodes(&ipList);
 		throw "Out of memory reading IPs from iptables.";
+	}
+	if ((useIpset) && (!foundMembers)) {
+		// If Members: wasn't found then the set doesnt' exist. Create it.
+		CreateIpsetSetname();
+		MakeSureIptablesHasIpsetRule();
 	}
 	return ipList;
 }
@@ -266,7 +368,15 @@ bool AddIPToList(struct node **list,char *line,bool parse,bool sorted,struct nod
 				if (ip == nullptr) {
 					return false;
 				}
-				memcpy(ip,line+12,length);
+				memcpy(ip,line+12,length);				
+				// Remove enter character.
+				while (length > 0) {
+					if (ip[length-1] < ' ') {
+						length--;
+					} else {
+						break;
+					}
+				}	
 				ip[length]=0;
 				new_node = new node;// (struct node *)malloc(sizeof(struct node));
 				if (new_node == nullptr) {
@@ -288,7 +398,16 @@ bool AddIPToList(struct node **list,char *line,bool parse,bool sorted,struct nod
 		if (ip == nullptr) {
 			return false;
 		}
-		strcpy(ip,line);		
+		strcpy(ip,line);
+		// Remove enter character.
+		while (length > 0) {
+			if (ip[length-1] < ' ') {
+				length--;
+				ip[length] = 0;
+			} else {
+				break;
+			}
+		}
 		new_node = new node;// (struct node *)malloc(sizeof(struct node));
 		if (new_node == nullptr) {
 			delete[] ip;
@@ -490,7 +609,7 @@ struct node *GetIPsToBan(const char *server)
 }
 
 // Fetch banned IPs from the database and ban them.
-void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_ban,int stop_count)
+void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_ban,int stop_count,bool useIpset)
 {
 	struct node *ipsToBan;
 	struct node *loop;
@@ -515,7 +634,7 @@ void FetchBannedIPs(const char *server,struct node **current_ips,bool actually_b
 			if (actually_ban && IsIP(item)) {				
 				// banned will be set to nullptr if it is move to the current_ips list.
 				DEBUG;
-				if (BanThisIP(&banned,current_ips))
+				if (BanThisIP(&banned,current_ips,useIpset))
 				{
 					DEBUG;
 					numberofsaves++;
@@ -635,11 +754,12 @@ void FreeNodes(struct node **current_ips)
 }
 // Ban bannedIP if it's not in current_ips. Then add it to current_ips.
 // Sets *bannedIP to nullptr if it was added to current_ips.
-bool BanThisIP(struct node **bannedIP,struct node **current_ips)
+bool BanThisIP(struct node **bannedIP,struct node **current_ips,bool useIpset)
 {
 	struct node *search;
 	struct node *banned;
-	char command[200];
+	const int COMMAND_SIZE = 200;
+	char command[COMMAND_SIZE];
 	int found;
 	
 	banned = *bannedIP;
@@ -665,10 +785,13 @@ bool BanThisIP(struct node **bannedIP,struct node **current_ips)
 		}
 		*bannedIP = nullptr;
 	}
-	
-	snprintf(command,199,"sudo iptables -w -A INPUT -s %s -j DROP",banned->item);
+	if (useIpset) {
+		snprintf(command,COMMAND_SIZE,"sudo ipset add %s %s",ipset_name,banned->item);
+	} else {
+		snprintf(command,COMMAND_SIZE,"sudo iptables -w -A INPUT -s %s -j DROP",banned->item);
+	}
 	//printf("%s\n",command);
-	command[199] = 0;
+	command[COMMAND_SIZE-1] = 0;
 	system(command);
 	return true;
 }
@@ -695,6 +818,45 @@ bool IsIP(const char *ip)
 		}
 	}
 	return true;
+}
+// Create the ipset name. The program must already know it doesn't exist before calling.
+void CreateIpsetSetname()
+{
+	const int BUFFER_SIZE = 200;
+	char buffer[BUFFER_SIZE];
+
+	snprintf(buffer,BUFFER_SIZE,"sudo ipset create %s iphash",ipset_name);
+	printf("%s\n",buffer);
+	system(buffer);
+	return;
+}
+// Make sure iptables has the right ban rule for ipset.
+void MakeSureIptablesHasIpsetRule()
+{
+	struct node *ipList;
+	struct node *loop;
+	const int BUFFER_SIZE = 200;
+	char buffer[BUFFER_SIZE];
+	bool hasIpsetRule;
+	
+	// Look for rule in iptables.
+	ipList = ReadFromIptables(false,nullptr,false,true);
+	hasIpsetRule = false;
+	loop = ipList;
+	while (loop != nullptr) {
+		if (strcasestr(loop->item,ipset_name)!=nullptr) {
+			hasIpsetRule = true;
+			break;
+		}
+		loop = loop->bigger;
+	}
+	FreeNodes(&ipList);
+	if (!hasIpsetRule) {
+		snprintf(buffer,BUFFER_SIZE,"sudo iptables -A INPUT -m set --match-set %s src -j DROP",ipset_name);
+		printf("%s\n",buffer);
+		system(buffer);
+	}
+	return;
 }
 
 #ifdef __linux__
