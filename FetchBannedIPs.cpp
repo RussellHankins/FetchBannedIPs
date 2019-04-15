@@ -206,21 +206,23 @@ void ProcessThreeParameters(const char *argv1,const char *argv2,const char *argv
 // Show a message telling the user how to use this program.
 void ShowHelpMessage()
 {
-	printf("FetchBannedIPs V 1.5\n");
-	printf("Reads banned IPs from a database and bans them on this server.\n");
-	printf("FetchBannedIPs uses iptables, but if you add the IPSET parameter,it will use ipset.\n");
-	printf("Example 1 - List banned IPs from the database:\n");
-	printf("FetchBannedIPs 192.168.0.204\n");	   
-	printf("Example 2 - Read the banned IPs from the database and ban them here:\n");
+	printf("FetchBannedIPs V 1.5 reads banned IPs from a database and bans them on this server.\n");
+	printf("It uses iptables, but if you add the IPSET parameter,it will use ipset.\n");
+	printf("Examples:\n");
+	printf("List banned IPs from the database: FetchBannedIPs 192.168.0.204\n");
+	printf("Read the banned IPs from the database and ban them here:\n");
 	printf("FetchBannedIPs 192.168.0.204 BAN\n");
-	printf("Example 3 - Read the banned IPs from the database and ban them here (Stop at 200):\n");
-	printf("FetchBannedIPs 192.168.0.204 BAN200\n");
-	printf("Example 4 - List all the IPs banned in iptables:\n");
-	printf("FetchBannedIPs LIST\n");
-	printf("Example 5 - Clear all banned IPs from iptables:\n");
-	printf("FetchBannedIPs CLEAR\n");	
-	printf("Example 6 - Read the banned IPs from the database and ban them with ipset:\n");
+	printf("Read the banned IPs from the database and ban them with ipset:\n");
 	printf("FetchBannedIPs 192.168.0.204 BAN IPSET\n");
+	printf("Read the banned IPs from the database and ban up to 200 of them here:\n");
+	printf("FetchBannedIPs 192.168.0.204 BAN200\n");
+	printf("Read the banned IPs from the database and ban up to 200 of them here with ipset:");
+	printf("FetchBannedIPs 192.168.0.204 BAN200 IPSET\n");
+	printf("List all the IPs banned in iptables: FetchBannedIPs LIST\n");
+	printf("List the banned IPs from ipset: FetchBannedIPs LIST IPSET\n");
+	printf("Clear all banned IPs from iptables: FetchBannedIPs CLEAR\n");
+	printf("Clear the banned IPs from ipset: FetchBannedIPs CLEAR IPSET\n");
+	printf("The iptables and ipset rules for the set name \"evil_hackers\" are automatically created if you use ipset.\n");
 	return;
 }
 
